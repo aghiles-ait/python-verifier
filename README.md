@@ -50,7 +50,7 @@ Verifier (this script)          CVM (quote-service-container)        Blockchain 
         │  1. SHA-256(app_compose) == compose-hash in event log         │
         │  2. Verify quote signature via Phala Cloud                    │
         │  3. Verify nonce in report_data                               │
-        │  4. Replay RTMR3 hash chain from event log                   │
+        │  4. Replay RTMR3 hash chain from event log                    │
         │  5. Check docker image pinning                                │
         │                              │                                │
         │──eth_call allowedComposeHashes(hash)─────────────────────────>│
