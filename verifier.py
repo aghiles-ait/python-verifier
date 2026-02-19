@@ -70,8 +70,10 @@ if __name__ == '__main__':
     nonce_hex = nonce.hex()
     print(f'Nonce (hex): {nonce_hex}')
 
+    quote_service_port = '8081' # change according to your config
+
     # Fetch attestation quote with nonce bound into report_data
-    attest_response = requests.get(f'https://{app_id}-8081.apps.ovh-tdx-dev.iex.ec:9204/quote?data={nonce_hex}', verify=False)
+    attest_response = requests.get(f'https://{app_id}-{quote_service_port}.apps.ovh-tdx-dev.iex.ec:9204/quote?data={nonce_hex}', verify=False)
     attest_data = attest_response.json()
 
     quote = attest_data['quote']
@@ -88,7 +90,7 @@ if __name__ == '__main__':
     app_compose_config = tcb_info['app_compose'] 
 
     #--------------------------------Step 1: verify compose_hash--------------------------------
-    #We should first compare app_compose_config against whitelisted reference for the app that we expose
+    # We should first compare app_compose_config against whitelisted reference for the app that we expose
 
     # Calculate SHA-256 hash of app-compose 
     calculated_hash = hashlib.sha256(app_compose_config.encode()).hexdigest()
