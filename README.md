@@ -38,24 +38,33 @@ Nonce (hex): a4d7fd2fdd7291dc8283b8697bd642c520943f066ab7b216fcab14f3c6ab70a8
 
 ## Architecture
 
-```
-Verifier (this script)          CVM (quote-service-container)        Blockchain (Sepolia)
-        │                              │                                │
-        │──GET /quote?data=<nonce>────>│                                │
-        │<──── quote + event_log ──────│                                │
-        │                              │                                │
-        │──GET /prpc/Info ────────────>│                                │
-        │<──── tcb_info (app_compose)──│                                │
-        │                              │                                │
-        │  1. SHA-256(app_compose) == compose-hash in event log         │
-        │  2. Verify quote signature via Phala Cloud                    │
-        │  3. Verify nonce in report_data                               │
-        │  4. Replay RTMR3 hash chain from event log                    │
-        │  5. Check docker image pinning                                │
-        │                              │                                │
-        │──eth_call allowedComposeHashes(hash)─────────────────────────>│
-        │<──── true ────────────────────────────────────────────────────│
-        │  6. compose-hash is whitelisted on-chain                      │
+```mermaid
+sequenceDiagram
+    participant V as Verifier (this script)
+    participant C as CVM (quote-service-container)
+    participant P as Phala Cloud
+    participant B as Blockchain (Sepolia)
+
+    V->>C: GET /quote?data=<nonce>
+    C-->>V: quote + event_log
+
+    V->>C: GET /prpc/Info
+    C-->>V: tcb_info (app_compose)
+
+    Note over V: 1. SHA-256(app_compose) == compose-hash in event log
+
+    V->>P: POST /verify (quote)
+    P-->>V: verified: true
+
+    Note over V: 2. Quote signature verified (genuine TDX hardware)
+    Note over V: 3. Verify nonce in report_data (freshness)
+    Note over V: 4. Replay RTMR3 hash chain from event log
+    Note over V: 5. Check docker image pinning
+
+    V->>B: eth_call allowedComposeHashes(hash)
+    B-->>V: true
+
+    Note over V: 6. compose-hash is whitelisted on-chain
 ```
 
 ## References
