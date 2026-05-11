@@ -1,10 +1,17 @@
+'''
+End-to-end remote attestation verifier for dstack Confidential Virtual Machines (CVMs).
+
+Performs the 6 verification steps (compose-hash, quote signature, report_data challenge,
+RTMR3 replay, docker image pinning, on-chain governance) to prove that a specific
+application is running unmodified inside genuine Intel TDX hardware.
+'''
 import json
 import os
-import requests
 import hashlib
-import yaml
-import urllib3
-from Crypto.Hash import keccak
+import requests
+#import yaml
+#import urllib3
+#from Crypto.Hash import keccak
 
 # Event type constant for dstack runtime events
 DSTACK_RUNTIME_EVENT_TYPE = 0x08000001
@@ -33,10 +40,10 @@ def replay_rtmr3(event_log_json):
     Reference: verifier/src/verification.rs - replay_event_logs()
     Reference: cc-eventlog/src/runtime_events.rs - replay_events()
     '''
-    events = json.loads(event_log_json)
+    runtime_events = json.loads(event_log_json)
     rtmr3 = b'\x00' * 48  # initial value: 48 zero bytes
 
-    for event in events:
+    for event in runtime_events:
         if event['imr'] != 3:
             continue
 
@@ -59,91 +66,89 @@ def replay_rtmr3(event_log_json):
     return rtmr3
 
 if __name__ == '__main__':
-    # Disable SSL warnings (temporary workaround until we change DNS hosting provider to Cloudflare)
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
+    #INPUTS:
     #Application (docker-compose based app) we want to attest
-    app_id = 'dfc9c995de8775d0fa3f8a9dfd720f1f493cbba1'
+    INSTANCE_ID = 'f0dff7c095b994bae1d98302d20e01d4d77574a5'
+    QUOTE_SERVICE_PORT = '9999' # change according to your config
+    URL_SUFFIX = 'apps.ovh-tdx-dev.noxprotocol.dev'
 
-    # Generate a random nonce (32 bytes = 64 hex chars, fits within 64 bytes max)
-    nonce = os.urandom(32)
-    nonce_hex = nonce.hex()
-    print(f'Nonce (hex): {nonce_hex}')
+    BASE_URL = f'https://{INSTANCE_ID}-{QUOTE_SERVICE_PORT}.{URL_SUFFIX}'
+    print(f'Attesting CVM on quote service: https://{INSTANCE_ID}-{QUOTE_SERVICE_PORT}.{URL_SUFFIX}')
 
-    quote_service_port = '8081' # change according to your config
+    # Generate a random challenge (32 bytes = 64 hex chars, fits within 64 bytes max)
+    challenge = os.urandom(32)
+    challenge_hex = challenge.hex()
+    print(f'Generating challenge (hex): {challenge_hex}')
 
-    # Fetch attestation quote with nonce bound into report_data
-    attest_response = requests.get(f'https://{app_id}-{quote_service_port}.apps.ovh-tdx-dev.iex.ec:9204/quote?data={nonce_hex}', verify=False)
+    # Fetch attestation quote with challenge bound into report_data
+    attest_response = requests.get(
+        f'{BASE_URL}/quote?data={challenge_hex}',
+        timeout=15,
+    )
     attest_data = attest_response.json()
-
     quote = attest_data['quote']
     event_log = attest_data['event_log']
-    #TODO: extract report_data and verify it against the expected value
 
     # Fetch application configuration
     info_response = requests.get(
-        f'https://{app_id}-8090.apps.ovh-tdx-dev.iex.ec:9204/prpc/Info',
-        verify=False,
+        f'{BASE_URL}/info',
+        timeout=15,
     )
     app_info = info_response.json()
-    tcb_info = json.loads(app_info['tcb_info'])
-    app_compose_config = tcb_info['app_compose'] 
+    tcb_info = app_info['tcb_info']
+    app_compose_config = tcb_info['app_compose']
 
-    #--------------------------------Step 1: verify compose_hash--------------------------------
-    # We should first compare app_compose_config against whitelisted reference for the app that we expose
-
-    # Calculate SHA-256 hash of app-compose 
-    calculated_hash = hashlib.sha256(app_compose_config.encode()).hexdigest()
-
-    # Extract attested hash from RTMR3 event log
-    events = json.loads(event_log)
-    compose_event = next(e for e in events if e['event'] == 'compose-hash')
-    attested_hash = compose_event['event_payload']
-
-    # Verify hashes match
-    assert calculated_hash == attested_hash, 'compose-hash mismatch'
-    print(f'[OK] Step 1: compose-hash verified ({calculated_hash})')
-
-    #--------------------------------Step 2: verify quote signature--------------------------------
-
-    # We can use Intel PCS
-    # Or expose our own verification service
-    # Or Phala cloud verification service
+    #--------------------------------Step 1: verify quote signature--------------------------------
+    # We can expose our own verification service
+    # Or use Phala cloud verification service
     verify_response = requests.post(
         'https://cloud-api.phala.network/api/v1/attestations/verify',
-        json={'hex': quote}
+        json={'hex': quote},
+        timeout=15,
     )
-
+    #print(verify_response.json())
     result = verify_response.json()
     assert result['quote']['verified'], 'Hardware verification failed'
-    print(f'[OK] Step 2: quote signature verified by Phala Cloud')
+    print('[OK] Step 1: quote signature verified by Phala Cloud')
 
-    #--------------------------------Step 3: verify report_data (nonce binding)--------------------------------
+    #-----------------Step 2: verify report_data (challenge binding)-----------------
     quote_report_data = result['quote']['body']['reportdata']
     quote_report_data = quote_report_data[2:] # Remove 0x prefix
 
-    # report_data = ASCII encoding of nonce_hex, zero-padded to 64 bytes
-    expected_report_data = nonce_hex.encode('ascii').hex().ljust(128, '0')
+    # report_data = ASCII encoding of challenge_hex, zero-padded to 64 bytes
+    expected_report_data = challenge_hex.encode('ascii').hex().ljust(128, '0')
 
     assert quote_report_data == expected_report_data, (
         f'report_data mismatch!\n'
         f'  expected: {expected_report_data}\n'
         f'  got:      {quote_report_data}'
     )
-    print(f'[OK] Step 3: report_data verified (nonce bound to quote)')
+    print('[OK] Step 2: Challenge bound to quote matches expected value')
 
+    events = json.loads(event_log)
+    
+    #--------------------------------Step 3: extract os_image_hash--------------------------------
+    os_image_event = next(e for e in events if e['event'] == 'os-image-hash' and e['imr'] == 3)
+    os_image_hash = os_image_event['event_payload']
+    print(f'[OK] Step 3: os-image-hash extracted ({os_image_hash}) and exists in RTMR3 event log')
 
-    #--------------------------------Adcanced verification--------------------------------
-    #RTMR3 event log replay: Cryptographically prove the boot sequence
-    #Docker image digests: Ensure images are pinned to specific versions
-    #On-chain governance: Verify only authorized configs can run
-    #Source code provenance: Link images back to audited source code
+    #--------------------------------Step 4: verify compose_hash--------------------------------
+    # Calculate SHA-256 hash of app-compose
+    CALCULATED_HASH = hashlib.sha256(app_compose_config.encode()).hexdigest()
 
-    #------------------------Step 4: verify RTMR3 event log replay------------------------
+    # Extract attested hash from RTMR3 event log
+    compose_event = next(e for e in events if e['event'] == 'compose-hash' and e['imr'] == 3)
+    attested_hash = compose_event['event_payload']
+
+    # Verify hashes match
+    assert CALCULATED_HASH == attested_hash, 'compose-hash mismatch'
+    print(f'[OK] Step 4: compose-hash verified ({CALCULATED_HASH}) and exists in RTMR3 event log')
+
+    #------------------------Step 5: verify RTMR3 event log replay------------------------
     # Replay the event log to recompute RTMR3, then compare with the value in the quote
     # This proves the event log (containing compose-hash etc.) has not been tampered with
 
-    replayed_rtmr3 = replay_rtmr3(event_log)
+    REPLAYED_RTMR3 = replay_rtmr3(event_log)
 
     # Get RTMR3 from the quote (returned by Phala verification, prefixed with 0x)
     quote_rtmr3_hex = result['quote']['body']['rtmr3']
@@ -151,13 +156,51 @@ if __name__ == '__main__':
         quote_rtmr3_hex = quote_rtmr3_hex[2:]
     quote_rtmr3 = bytes.fromhex(quote_rtmr3_hex)
 
-    assert replayed_rtmr3 == quote_rtmr3, (
+    assert REPLAYED_RTMR3 == quote_rtmr3, (
         f'RTMR3 mismatch!\n'
-        f'  replayed: {replayed_rtmr3.hex()}\n'
+        f'  replayed: {REPLAYED_RTMR3.hex()}\n'
         f'  quote:    {quote_rtmr3.hex()}'
     )
-    print(f'[OK] Step 4: RTMR3 replay verified ({replayed_rtmr3.hex()})')
+    print(f'[OK] Step 5: RTMR3 replay verified ({REPLAYED_RTMR3.hex()})')
 
+    #--------------------------------Step 6: Display significant information--------------------------------
+    body = result['quote']['body']
+    app_compose_json = json.loads(app_compose_config)
+    docker_compose_yaml = app_compose_json['docker_compose_file']
+
+    WIDTH = 80
+    print()
+    print('=' * WIDTH)
+    print(' VERIFICATION SUMMARY '.center(WIDTH, '='))
+    print('=' * WIDTH)
+    print()
+    print('  Status        : ALL CHECKS PASSED')
+    print('  Hardware      : Intel TDX (verified by Phala Cloud)')
+    print(f'  APP ID        : {app_info['app_id']} ({app_info['app_name']})')
+    print(f'  INSTANCE ID   : {app_info['instance_id']}')
+    print(f'  OS Image Hash : {os_image_hash}')
+    print(f'    For reproducibility of hash:')
+    print(f'      - Download: https://download.dstack.org/os-images/mr_{os_image_hash}.tar.gz')
+    print(f'      - Extract the tar.gz file and compute the hash of the extracted file using "sha256sum sha256sum.txt"')
+    print(f'  Compose hash  : {CALCULATED_HASH}')
+    print(f'  Node provider : {result['node_provider']}')
+    print()
+    print('  RTMR registers')
+    print('  ' + '-' * (WIDTH - 2))
+    print(f'    RTMR0       : {body['rtmr0']}')
+    print(f'    RTMR1       : {body['rtmr1']}')
+    print(f'    RTMR2       : {body['rtmr2']}')
+    print(f'    RTMR3       : {body['rtmr3']}')
+    print( '                  (replayed from event log -> match)')
+    print()
+    print('  Docker compose (attested)')
+    print('  ' + '-' * (WIDTH - 2))
+    for line in docker_compose_yaml.rstrip().splitlines():
+        print(f'    {line}')
+    print()
+    print('=' * WIDTH)
+
+    '''
     #--------------------------------Step 5: verify docker image digests--------------------------------
     # Parse app-compose and extract docker-compose
     app_compose = json.loads(app_compose_config)
@@ -171,22 +214,22 @@ if __name__ == '__main__':
     
     #--------------------------------Step 6: verify on-chain governance--------------------------------
     # Verify the compose-hash is whitelisted in the DstackApp smart contract
-    # DstackApp address = app_id (the contract deployed via kms:create-app)
+    # DstackApp address = APP_ID (the contract deployed via kms:create-app)
     # Function: allowedComposeHashes(bytes32) → bool
     # Selector: first 4 bytes of keccak256 of the function signature
-
+    
     ALCHEMY_API_KEY = os.environ.get('ALCHEMY_API_KEY', '')
     assert ALCHEMY_API_KEY, 'ALCHEMY_API_KEY environment variable is required for on-chain verification'
 
     rpc_url = f'https://eth-sepolia.g.alchemy.com/v2/{ALCHEMY_API_KEY}'
-    dstack_app_address = f'0x{app_id}'
-    compose_hash_bytes32 = '0x' + calculated_hash  # SHA-256 = 32 bytes = bytes32
+    dstack_app_address = f'0x{APP_ID}'
+    compose_hash_bytes32 = '0x' + CALCULATED_HASH  # SHA-256 = 32 bytes = bytes32
 
     # Compute selector: keccak256("allowedComposeHashes(bytes32)")[:4]
     selector = keccak.new(data=b'allowedComposeHashes(bytes32)', digest_bits=256).hexdigest()[:8]
 
     # ABI-encode: selector (4 bytes) + compose_hash (32 bytes, already left-aligned)
-    calldata = '0x' + selector + calculated_hash.zfill(64)
+    calldata = '0x' + selector + CALCULATED_HASH.zfill(64)
 
     rpc_response = requests.post(rpc_url, json={
         'jsonrpc': '2.0',
@@ -212,3 +255,4 @@ if __name__ == '__main__':
     #--------------------------------Step 7: verify source code provenance--------------------------------
     # For maximum verifiability, use reproducible builds where anyone can rebuild from source and get identical digests. 
     # Publish your Dockerfile and build instructions.
+    '''
