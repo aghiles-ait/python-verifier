@@ -24,7 +24,7 @@ def compute_runtime_event_digest(event_type, event_name, event_payload_hex):
     data = event_type_bytes + b':' + event_name.encode() + b':' + event_payload_bytes
     return hashlib.sha384(data).digest()
 
-def replay_rtmr3(event_log_json):
+def replay_rtmr3(runtime_events):
     '''
     Replay RTMR3 from event log to recompute the expected register value.
     RTMR3 uses a hash chain: starting from 48 zero bytes, each event extends
@@ -37,7 +37,6 @@ def replay_rtmr3(event_log_json):
     Reference: verifier/src/verification.rs - replay_event_logs()
     Reference: cc-eventlog/src/runtime_events.rs - replay_events()
     '''
-    runtime_events = json.loads(event_log_json)
     rtmr3 = b'\x00' * 48  # initial value: 48 zero bytes
 
     for event in runtime_events:
@@ -70,30 +69,26 @@ if __name__ == '__main__':
     URL_SUFFIX = 'apps.ovh-tdx-dev.noxprotocol.dev'
 
     BASE_URL = f'https://{INSTANCE_ID}-{QUOTE_SERVICE_PORT}.{URL_SUFFIX}'
-    print(f'Attesting CVM on quote service: https://{INSTANCE_ID}-{QUOTE_SERVICE_PORT}.{URL_SUFFIX}')
+    print(f'Attesting CVM on quote service: {BASE_URL}')
 
     # Generate a random challenge (32 bytes = 64 hex chars, fits within 64 bytes max)
-    challenge = os.urandom(32)
-    challenge_hex = challenge.hex()
+    challenge_hex = os.urandom(32).hex()
     print(f'Generating challenge (hex): {challenge_hex}')
 
     # Fetch attestation quote with challenge bound into report_data
-    attest_response = requests.get(
+    attest_data = requests.get(
         f'{BASE_URL}/quote?data={challenge_hex}',
         timeout=15,
-    )
-    attest_data = attest_response.json()
+    ).json()
     quote = attest_data['quote']
     event_log = attest_data['event_log']
 
     # Fetch application configuration
-    info_response = requests.get(
+    app_info = requests.get(
         f'{BASE_URL}/info',
         timeout=15,
-    )
-    app_info = info_response.json()
-    tcb_info = app_info['tcb_info']
-    app_compose_config = tcb_info['app_compose']
+    ).json()
+    app_compose_config = app_info['tcb_info']['app_compose']
 
     #--------------------------------Step 1: verify quote signature--------------------------------
     print('Step 1: Verification of quote signature by Phala Cloud...')
@@ -106,6 +101,7 @@ if __name__ == '__main__':
     )
     #print(verify_response.json())
     result = verify_response.json()
+    body = result['quote']['body']
     assert result['quote']['verified'], 'Hardware verification failed'
     print('[OK] Step 1: Quote signature attested')
     if result['node_provider']['proof_of_cloud']:
@@ -116,8 +112,7 @@ if __name__ == '__main__':
 
     #-----------------Step 2: verify report_data (challenge binding)-----------------
     print('Step 2: Verification of quote freshness...')
-    quote_report_data = result['quote']['body']['reportdata']
-    quote_report_data = quote_report_data[2:] # Remove 0x prefix
+    quote_report_data = body['reportdata'][2:] # Remove 0x prefix
 
     # report_data = ASCII encoding of challenge_hex, zero-padded to 64 bytes
     expected_report_data = challenge_hex.encode('ascii').hex().ljust(128, '0')
@@ -142,20 +137,17 @@ if __name__ == '__main__':
     # Replay the event log to recompute RTMR3, then compare with the value in the quote
     # This proves the event log (containing compose-hash etc.) has not been tampered with
     print('Step 3: Extraction of RTMR values from quote...')
-    print(f'RTMR0: {result['quote']['body']['rtmr0']}')
-    print(f'RTMR1: {result['quote']['body']['rtmr1']}')
-    print(f'RTMR2: {result['quote']['body']['rtmr2']}')
-    print(f'RTMR3: {result['quote']['body']['rtmr3']}')
+    print(f'RTMR0: {body['rtmr0']}')
+    print(f'RTMR1: {body['rtmr1']}')
+    print(f'RTMR2: {body['rtmr2']}')
+    print(f'RTMR3: {body['rtmr3']}')
 
     print('Replaying RTMR3 from event log...')
 
-    REPLAYED_RTMR3 = replay_rtmr3(event_log)
+    REPLAYED_RTMR3 = replay_rtmr3(events)
 
     # Get RTMR3 from the quote (returned by Phala verification, prefixed with 0x)
-    quote_rtmr3_hex = result['quote']['body']['rtmr3']
-    if quote_rtmr3_hex.startswith('0x'):
-        quote_rtmr3_hex = quote_rtmr3_hex[2:]
-    quote_rtmr3 = bytes.fromhex(quote_rtmr3_hex)
+    quote_rtmr3 = bytes.fromhex(body['rtmr3'].removeprefix('0x'))
 
     assert REPLAYED_RTMR3 == quote_rtmr3, (
         f'RTMR3 mismatch!\n'
