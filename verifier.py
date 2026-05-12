@@ -126,25 +126,8 @@ if __name__ == '__main__':
     print('[OK] Step 2: Challenge bound to quote matches expected value')
 
     events = json.loads(event_log)
-    
-    #--------------------------------Step 3: extract os_image_hash--------------------------------
-    os_image_event = next(e for e in events if e['event'] == 'os-image-hash' and e['imr'] == 3)
-    os_image_hash = os_image_event['event_payload']
-    print(f'[OK] Step 3: os-image-hash extracted ({os_image_hash}) and exists in RTMR3 event log')
 
-    #--------------------------------Step 4: verify compose_hash--------------------------------
-    # Calculate SHA-256 hash of app-compose
-    CALCULATED_HASH = hashlib.sha256(app_compose_config.encode()).hexdigest()
-
-    # Extract attested hash from RTMR3 event log
-    compose_event = next(e for e in events if e['event'] == 'compose-hash' and e['imr'] == 3)
-    attested_hash = compose_event['event_payload']
-
-    # Verify hashes match
-    assert CALCULATED_HASH == attested_hash, 'compose-hash mismatch'
-    print(f'[OK] Step 4: compose-hash verified ({CALCULATED_HASH}) and exists in RTMR3 event log')
-
-    #------------------------Step 5: verify RTMR3 event log replay------------------------
+     #------------------------Step 3: verify RTMR3 event log replay------------------------
     # Replay the event log to recompute RTMR3, then compare with the value in the quote
     # This proves the event log (containing compose-hash etc.) has not been tampered with
 
@@ -161,9 +144,27 @@ if __name__ == '__main__':
         f'  replayed: {REPLAYED_RTMR3.hex()}\n'
         f'  quote:    {quote_rtmr3.hex()}'
     )
-    print(f'[OK] Step 5: RTMR3 replay verified ({REPLAYED_RTMR3.hex()})')
+    print(f'[OK] Step 3: RTMR3 replay verified ({REPLAYED_RTMR3.hex()})')
+    
+    #--------------------------------Step 4: extract os_image_hash--------------------------------
+    os_image_event = next(e for e in events if e['event'] == 'os-image-hash' and e['imr'] == 3)
+    os_image_hash = os_image_event['event_payload']
+    print(f'[OK] Step 3: os-image-hash extracted ({os_image_hash}) and exists in RTMR3 event log')
 
-    #--------------------------------Step 6: Display significant information--------------------------------
+    #--------------------------------Step 4: verify compose_hash--------------------------------
+    # Calculate SHA-256 hash of app-compose
+    CALCULATED_HASH = hashlib.sha256(app_compose_config.encode()).hexdigest()
+
+    # Extract attested hash from RTMR3 event log
+    compose_event = next(e for e in events if e['event'] == 'compose-hash' and e['imr'] == 3)
+    attested_hash = compose_event['event_payload']
+
+    # Verify hashes match
+    assert CALCULATED_HASH == attested_hash, 'compose-hash mismatch'
+    print(f'[OK] Step 4: compose-hash verified ({CALCULATED_HASH}) and exists in RTMR3 event log')
+
+
+    #--------------------------------Step 5: Display significant information--------------------------------
     body = result['quote']['body']
     app_compose_json = json.loads(app_compose_config)
     docker_compose_yaml = app_compose_json['docker_compose_file']
