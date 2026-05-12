@@ -9,9 +9,6 @@ import json
 import os
 import hashlib
 import requests
-#import yaml
-#import urllib3
-#from Crypto.Hash import keccak
 
 # Event type constant for dstack runtime events
 DSTACK_RUNTIME_EVENT_TYPE = 0x08000001
@@ -99,6 +96,7 @@ if __name__ == '__main__':
     app_compose_config = tcb_info['app_compose']
 
     #--------------------------------Step 1: verify quote signature--------------------------------
+    print('Step 1: Verification of quote signature by Phala Cloud...')
     # We can expose our own verification service
     # Or use Phala cloud verification service
     verify_response = requests.post(
@@ -109,9 +107,15 @@ if __name__ == '__main__':
     #print(verify_response.json())
     result = verify_response.json()
     assert result['quote']['verified'], 'Hardware verification failed'
-    print('[OK] Step 1: quote signature verified by Phala Cloud')
+    print('[OK] Step 1: Quote signature attested')
+    if result['node_provider']['proof_of_cloud']:
+        print('[OK] Step 1: Proof of Cloud verified')
+    print('[KO-] Step 1: Not proof of cloud verified')
+    print('[KO] Step 1: Error to handle...')
+    print()
 
     #-----------------Step 2: verify report_data (challenge binding)-----------------
+    print('Step 2: Verification of quote freshness...')
     quote_report_data = result['quote']['body']['reportdata']
     quote_report_data = quote_report_data[2:] # Remove 0x prefix
 
@@ -123,13 +127,27 @@ if __name__ == '__main__':
         f'  expected: {expected_report_data}\n'
         f'  got:      {quote_report_data}'
     )
-    print('[OK] Step 2: Challenge bound to quote matches expected value')
+    print('[OK] Step 2: Quote freshness verified')
+    print('[KO] Step 2: Challenge did NOT match the expected value')
+    print()
 
     events = json.loads(event_log)
 
-     #------------------------Step 3: verify RTMR3 event log replay------------------------
+    #--------------------------------Display App identity--------------------------------
+    print(f'APP ID        : {app_info['app_id']} ({app_info['app_name']})')
+    print(f'INSTANCE ID   : {app_info['instance_id']}')
+    print()
+
+    #------------------------Step 3: verify RTMR3 event log replay------------------------
     # Replay the event log to recompute RTMR3, then compare with the value in the quote
     # This proves the event log (containing compose-hash etc.) has not been tampered with
+    print('Step 3: Extraction of RTMR values from quote...')
+    print(f'RTMR0: {result['quote']['body']['rtmr0']}')
+    print(f'RTMR1: {result['quote']['body']['rtmr1']}')
+    print(f'RTMR2: {result['quote']['body']['rtmr2']}')
+    print(f'RTMR3: {result['quote']['body']['rtmr3']}')
+
+    print('Replaying RTMR3 from event log...')
 
     REPLAYED_RTMR3 = replay_rtmr3(event_log)
 
@@ -144,14 +162,21 @@ if __name__ == '__main__':
         f'  replayed: {REPLAYED_RTMR3.hex()}\n'
         f'  quote:    {quote_rtmr3.hex()}'
     )
-    print(f'[OK] Step 3: RTMR3 replay verified ({REPLAYED_RTMR3.hex()})')
+    print('[OK] Step 3: RTMR3 replay verified')
+    print('[KO] Step 3: RTMR3 replay did NOT match the expected value')
+    print()
     
-    #--------------------------------Step 4: extract os_image_hash--------------------------------
+    #--------------------------------Step 4: verify os_image_hash--------------------------------
+    print('Step 4: Verification of os-image-hash...')
     os_image_event = next(e for e in events if e['event'] == 'os-image-hash' and e['imr'] == 3)
     os_image_hash = os_image_event['event_payload']
-    print(f'[OK] Step 3: os-image-hash extracted ({os_image_hash}) and exists in RTMR3 event log')
+    print(f'[OK] Step 4: os-image-hash ({os_image_hash}) exists in RTMR3 event log')
+    print(f'[OK] Download the os-image from: https://download.dstack.org/os-images/mr_{os_image_hash}.tar.gz')
+    print('[KO] Step 4: os-image-hash did NOT exist in RTMR3 event log')
+    print()
 
-    #--------------------------------Step 4: verify compose_hash--------------------------------
+    #--------------------------------Step 5: verify compose_hash--------------------------------
+    print('Step 5: Verification of compose-hash...')
     # Calculate SHA-256 hash of app-compose
     CALCULATED_HASH = hashlib.sha256(app_compose_config.encode()).hexdigest()
 
@@ -161,10 +186,20 @@ if __name__ == '__main__':
 
     # Verify hashes match
     assert CALCULATED_HASH == attested_hash, 'compose-hash mismatch'
-    print(f'[OK] Step 4: compose-hash verified ({CALCULATED_HASH}) and exists in RTMR3 event log')
+    print(f'[OK] Step 5: compose-hash ({CALCULATED_HASH}) exists in RTMR3 event log')
+    print(f'[KO] Step 5: compose-hash ({CALCULATED_HASH}) does not exists in RTMR3 event log')
+    print()
 
+    #--------------------------------Step 6: Display docker compose file--------------------------------
+    print('Step 6: Displaying docker compose file...')
+    app_compose_json = json.loads(app_compose_config)
+    docker_compose_yaml = app_compose_json['docker_compose_file']
+    for line in docker_compose_yaml.rstrip().splitlines():
+        print(f'    {line}')
+    print()
 
-    #--------------------------------Step 5: Display significant information--------------------------------
+    '''
+    #--------------------------------Step 7: Display significant information--------------------------------
     body = result['quote']['body']
     app_compose_json = json.loads(app_compose_config)
     docker_compose_yaml = app_compose_json['docker_compose_file']
@@ -200,7 +235,7 @@ if __name__ == '__main__':
         print(f'    {line}')
     print()
     print('=' * WIDTH)
-
+    '''
     '''
     #--------------------------------Step 5: verify docker image digests--------------------------------
     # Parse app-compose and extract docker-compose
